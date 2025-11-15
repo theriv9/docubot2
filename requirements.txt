@@ -3,3 +3,4 @@ azure-search-documents
 openai
 python-dotenv
 pypdf2
+pdfplumber
