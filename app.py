@@ -5,6 +5,7 @@ from azure.search.documents import SearchClient
 from openai import AzureOpenAI
 from dotenv import load_dotenv
 import os
+import subprocess
 
 load_dotenv()
 
@@ -19,7 +20,7 @@ search_client = SearchClient(ENDPOINT, INDEX_NAME, AzureKeyCredential(KEY))
 llm = AzureOpenAI(azure_endpoint=OPENAI_ENDPOINT, api_key=OPENAI_KEY, api_version="2024-02-01")
 
 def get_embedding(text):
-    return llm.embeddings.create(input=text, model="text-embedding-ada-002").data[0].embedding
+    return llm.embeddings.create(input=text, model=os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT")).data[0].embedding
 
 def retrieve(query, k=3):
     emb = get_embedding(query)
@@ -51,16 +52,77 @@ Answer:"""
 st.title("DocuBot — AI Document Q&A")
 st.write("Upload PDFs → Ask questions")
 
+# —————— SIDEBAR: PDF UPLOAD & INDEXING ——————
+# with st.sidebar:
+#     st.header("Upload PDFs")
+#     uploaded = st.file_uploader(
+#         "Drop PDFs here", 
+#         type="pdf", 
+#         accept_multiple_files=True
+#     )
+
+    # —————— SIDEBAR ——————
 with st.sidebar:
     st.header("Upload PDFs")
     uploaded = st.file_uploader("Drop PDFs here", type="pdf", accept_multiple_files=True)
-    if st.button("Index Documents") and uploaded:
+
+    # ← ADD CLEAR BUTTON
+    if st.button("🗑️ Clear Index (Remove ALL old data)"):
+        with st.spinner("Deleting ALL documents from Azure AI Search..."):
+            try:
+                while True:
+                    results = search_client.search(
+                        search_text="*", 
+                        top=1000, 
+                        select=["id"]
+                    )
+                    ids = [r["id"] for r in results]
+                    if not ids:
+                        break
+                    search_client.delete_documents([{"id": id} for id in ids])
+                st.success("Index FULLY CLEARED. Upload and index new PDFs.")
+            except Exception as e:
+                st.error(f"Clear failed: {e}")
+
+    elif st.button("Index Documents") and uploaded:
+        # 1. FORCE CLEAR OLD INDEX
+        with st.spinner("Clearing old index..."):
+            try:
+                while True:
+                    results = search_client.search(
+                        search_text="*", 
+                        top=1000, 
+                        select=["id"]
+                    )
+                    ids = [r["id"] for r in results]
+                    if not ids:
+                        break
+                    search_client.delete_documents([{"id": id} for id in ids])
+                st.success("Old index cleared")
+            except Exception as e:
+                st.error(f"Clear failed: {e}")
+
+        # 2. SAVE NEW PDFs
         os.makedirs("docs", exist_ok=True)
         for f in uploaded:
             with open(f"docs/{f.name}", "wb") as out:
                 out.write(f.getbuffer())
-        st.success("Saved! Run `python ingest_pdf.py` in terminal.")
-        st.info("After indexing, refresh and ask questions!")
+        st.success(f"Saved {len(uploaded)} PDF(s)")
+
+        # 3. RUN INGESTION
+        with st.spinner("Indexing new PDFs..."):
+            result = subprocess.run(
+                ["python", "ingest_pdf.py"],
+                capture_output=True,
+                text=True
+            )
+            if result.returncode == 0:
+                st.success("New PDFs indexed! Ask questions now.")
+                if result.stdout.strip():
+                    st.code(result.stdout.strip(), language="text")
+            else:
+                st.error("Ingestion failed:")
+                st.code(result.stderr or "No output", language="text")
 
 st.divider()
 question = st.text_input("Ask a question about your documents:")
